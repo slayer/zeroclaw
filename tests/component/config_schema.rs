@@ -218,6 +218,26 @@ fn gateway_path_prefix_accepts_valid_prefixes() {
 }
 
 #[test]
+fn gateway_path_prefix_rejects_unsafe_characters() {
+    for prefix in [
+        "/zero claw",
+        "/zero<claw",
+        "/zero>claw",
+        "/zero\"claw",
+        "/zero?query",
+        "/zero#frag",
+    ] {
+        let mut config = Config::default();
+        config.gateway.path_prefix = Some(prefix.into());
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("invalid character"),
+            "prefix {prefix:?} should be rejected, got: {err}"
+        );
+    }
+}
+
+#[test]
 fn gateway_path_prefix_accepts_none() {
     let config = Config::default();
     assert!(config.gateway.path_prefix.is_none());

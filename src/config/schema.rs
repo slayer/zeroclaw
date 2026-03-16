@@ -6037,12 +6037,25 @@ impl Config {
             anyhow::bail!("gateway.host must not be empty");
         }
         if let Some(ref prefix) = self.gateway.path_prefix {
+            let prefix = prefix.trim();
             if !prefix.is_empty() {
                 if !prefix.starts_with('/') {
                     anyhow::bail!("gateway.path_prefix must start with '/'");
                 }
                 if prefix.ends_with('/') {
                     anyhow::bail!("gateway.path_prefix must not end with '/' (including bare '/')");
+                }
+                // Reject characters unsafe for URL paths or HTML/JS injection
+                if let Some(bad) = prefix.chars().find(|c| {
+                    !matches!(c, '/' | '-' | '_' | '.' | '~'
+                        | 'a'..='z' | 'A'..='Z' | '0'..='9'
+                        | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | ';' | '='
+                        | ':' | '@')
+                }) {
+                    anyhow::bail!(
+                        "gateway.path_prefix contains invalid character '{bad}'; \
+                         only unreserved and sub-delim URI characters are allowed"
+                    );
                 }
             }
         }

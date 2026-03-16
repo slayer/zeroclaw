@@ -44,7 +44,9 @@ pub async fn handle_spa_fallback(State(state): State<AppState>) -> Response {
         html.into_owned()
     } else {
         let pfx = &state.path_prefix;
-        let script = format!(r#"<script>window.__ZEROCLAW_BASE__="{pfx}";</script>"#,);
+        // JSON-encode the prefix to safely embed in a <script> block
+        let json_pfx = serde_json::to_string(pfx).unwrap_or_else(|_| "\"\"".to_string());
+        let script = format!("<script>window.__ZEROCLAW_BASE__={json_pfx};</script>");
         // Rewrite absolute /_app/ references so the browser requests {prefix}/_app/...
         html.replace("/_app/", &format!("{pfx}/_app/"))
             .replace("<head>", &format!("<head>{script}"))
