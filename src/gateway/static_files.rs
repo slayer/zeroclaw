@@ -89,7 +89,7 @@ pub async fn handle_spa_fallback(State(state): State<AppState>, headers: HeaderM
 /// contains characters unsafe for embedding in HTML/URLs.
 fn sanitize_ingress_path(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_end_matches('/');
-    if trimmed.is_empty() || !trimmed.starts_with('/') {
+    if trimmed.is_empty() || !trimmed.starts_with('/') || trimmed.starts_with("//") {
         return None;
     }
     // Same character allowlist as config path_prefix validation — reject
