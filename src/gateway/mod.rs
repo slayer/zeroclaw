@@ -562,11 +562,13 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         idempotency_max_keys,
     ));
 
-    // Resolve optional path prefix for reverse-proxy deployments
+    // Resolve optional path prefix for reverse-proxy deployments.
+    // Trim here to normalize any whitespace that passed validation.
     let path_prefix: Option<&str> = config
         .gateway
         .path_prefix
         .as_deref()
+        .map(str::trim)
         .filter(|p| !p.is_empty());
 
     // ── Tunnel ────────────────────────────────────────────────

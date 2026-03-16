@@ -6037,7 +6037,8 @@ impl Config {
             anyhow::bail!("gateway.host must not be empty");
         }
         if let Some(ref prefix) = self.gateway.path_prefix {
-            let prefix = prefix.trim();
+            // Validate the raw value — no silent trimming so the stored
+            // value is exactly what was validated.
             if !prefix.is_empty() {
                 if !prefix.starts_with('/') {
                     anyhow::bail!("gateway.path_prefix must start with '/'");
@@ -6045,7 +6046,8 @@ impl Config {
                 if prefix.ends_with('/') {
                     anyhow::bail!("gateway.path_prefix must not end with '/' (including bare '/')");
                 }
-                // Reject characters unsafe for URL paths or HTML/JS injection
+                // Reject characters unsafe for URL paths or HTML/JS injection.
+                // Whitespace is intentionally excluded from the allowed set.
                 if let Some(bad) = prefix.chars().find(|c| {
                     !matches!(c, '/' | '-' | '_' | '.' | '~'
                         | 'a'..='z' | 'A'..='Z' | '0'..='9'

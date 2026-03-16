@@ -235,6 +235,16 @@ fn gateway_path_prefix_rejects_unsafe_characters() {
             "prefix {prefix:?} should be rejected, got: {err}"
         );
     }
+    // Leading/trailing whitespace is rejected by the starts_with('/') or
+    // invalid-character check — either way it must not pass validation.
+    for prefix in [" /zeroclaw ", " /zeroclaw"] {
+        let mut config = Config::default();
+        config.gateway.path_prefix = Some(prefix.into());
+        assert!(
+            config.validate().is_err(),
+            "whitespace-padded prefix {prefix:?} should be rejected"
+        );
+    }
 }
 
 #[test]
