@@ -179,6 +179,14 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_rejects_protocol_relative_url() {
+        // "//evil.com" would produce protocol-relative asset URLs like
+        // //evil.com/_app/foo.js, loading scripts from an external origin.
+        assert_eq!(sanitize_ingress_path("//evil.com"), None);
+        assert_eq!(sanitize_ingress_path("//evil.com/path"), None);
+    }
+
+    #[test]
     fn sanitize_rejects_xss_attempt() {
         assert_eq!(sanitize_ingress_path("/<script>alert(1)</script>"), None);
         assert_eq!(sanitize_ingress_path("/prefix?q=1"), None);
