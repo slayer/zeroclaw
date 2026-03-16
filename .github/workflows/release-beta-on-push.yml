@@ -3,6 +3,7 @@ name: Release Beta
 on:
   push:
     branches: [master]
+  workflow_dispatch:
 
 concurrency:
   group: release
