@@ -14,6 +14,7 @@ import Doctor from './pages/Doctor';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { DraftContext, useDraftStore } from './hooks/useDraft';
 import { setLocale, type Locale } from './lib/i18n';
+import { basePath } from './lib/basePath';
 
 // Locale context
 interface LocaleContextType {
@@ -58,7 +59,7 @@ function PairingDialog({ onPair }: { onPair: (code: string) => Promise<void> }) 
 
         <div className="text-center mb-8">
           <img
-            src="/_app/logo.png"
+            src={`${basePath}/_app/logo.png`}
             alt="ZeroClaw"
             className="h-20 w-20 rounded-2xl object-cover mx-auto mb-4 animate-float"
             style={{ boxShadow: '0 0 30px rgba(0,128,255,0.3)' }}

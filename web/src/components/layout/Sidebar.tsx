@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom';
+import { basePath } from '../../lib/basePath';
 import {
   LayoutDashboard,
   MessageSquare,
@@ -35,7 +36,7 @@ export default function Sidebar() {
       {/* Logo / Title */}
       <div className="flex items-center gap-3 px-4 py-4 border-b border-[#1a1a3e]/50">
         <img
-          src="/_app/logo.png"
+          src={`${basePath}/_app/logo.png`}
           alt="ZeroClaw"
           className="h-10 w-10 rounded-xl object-cover animate-pulse-glow"
         />

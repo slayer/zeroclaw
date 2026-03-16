@@ -315,6 +315,8 @@ pub struct AppState {
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Registry of dynamically connected nodes
     pub node_registry: Arc<nodes::NodeRegistry>,
+    /// Path prefix for reverse-proxy deployments (empty string = no prefix)
+    pub path_prefix: String,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -560,6 +562,15 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         idempotency_max_keys,
     ));
 
+    // Resolve optional path prefix for reverse-proxy deployments.
+    // Trim here to normalize any whitespace that passed validation.
+    let path_prefix: Option<&str> = config
+        .gateway
+        .path_prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+
     // ── Tunnel ────────────────────────────────────────────────
     let tunnel = crate::tunnel::create_tunnel(&config.tunnel)?;
     let mut tunnel_url: Option<String> = None;
@@ -578,41 +589,42 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         }
     }
 
-    println!("🦀 ZeroClaw Gateway listening on http://{display_addr}");
+    let pfx = path_prefix.unwrap_or("");
+    println!("🦀 ZeroClaw Gateway listening on http://{display_addr}{pfx}");
     if let Some(ref url) = tunnel_url {
         println!("  🌐 Public URL: {url}");
     }
-    println!("  🌐 Web Dashboard: http://{display_addr}/");
-    println!("  POST /pair      — pair a new client (X-Pairing-Code header)");
-    println!("  POST /webhook   — {{\"message\": \"your prompt\"}}");
+    println!("  🌐 Web Dashboard: http://{display_addr}{pfx}/");
+    println!("  POST {pfx}/pair      — pair a new client (X-Pairing-Code header)");
+    println!("  POST {pfx}/webhook   — {{\"message\": \"your prompt\"}}");
     if whatsapp_channel.is_some() {
-        println!("  GET  /whatsapp  — Meta webhook verification");
-        println!("  POST /whatsapp  — WhatsApp message webhook");
+        println!("  GET  {pfx}/whatsapp  — Meta webhook verification");
+        println!("  POST {pfx}/whatsapp  — WhatsApp message webhook");
     }
     if linq_channel.is_some() {
-        println!("  POST /linq      — Linq message webhook (iMessage/RCS/SMS)");
+        println!("  POST {pfx}/linq      — Linq message webhook (iMessage/RCS/SMS)");
     }
     if wati_channel.is_some() {
-        println!("  GET  /wati      — WATI webhook verification");
-        println!("  POST /wati      — WATI message webhook");
+        println!("  GET  {pfx}/wati      — WATI webhook verification");
+        println!("  POST {pfx}/wati      — WATI message webhook");
     }
     if nextcloud_talk_channel.is_some() {
-        println!("  POST /nextcloud-talk — Nextcloud Talk bot webhook");
+        println!("  POST {pfx}/nextcloud-talk — Nextcloud Talk bot webhook");
     }
-    println!("  GET  /api/*     — REST API (bearer token required)");
-    println!("  GET  /ws/chat   — WebSocket agent chat");
+    println!("  GET  {pfx}/api/*     — REST API (bearer token required)");
+    println!("  GET  {pfx}/ws/chat   — WebSocket agent chat");
     if config.nodes.enabled {
-        println!("  GET  /ws/nodes  — WebSocket node discovery");
+        println!("  GET  {pfx}/ws/nodes  — WebSocket node discovery");
     }
-    println!("  GET  /health    — health check");
-    println!("  GET  /metrics   — Prometheus metrics");
+    println!("  GET  {pfx}/health    — health check");
+    println!("  GET  {pfx}/metrics   — Prometheus metrics");
     if let Some(code) = pairing.pairing_code() {
         println!();
         println!("  🔐 PAIRING REQUIRED — use this one-time code:");
         println!("     ┌──────────────┐");
         println!("     │  {code}  │");
         println!("     └──────────────┘");
-        println!("     Send: POST /pair with header X-Pairing-Code: {code}");
+        println!("     Send: POST {pfx}/pair with header X-Pairing-Code: {code}");
     } else if pairing.require_pairing() {
         println!("  🔒 Pairing: ACTIVE (bearer token required)");
     } else {
@@ -664,6 +676,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         event_tx,
         shutdown_tx,
         node_registry,
+        path_prefix: path_prefix.unwrap_or("").to_string(),
     };
 
     // Config PUT needs larger body limit (1MB)
@@ -672,7 +685,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .layer(RequestBodyLimitLayer::new(1_048_576));
 
     // Build router with middleware
-    let app = Router::new()
+    let inner = Router::new()
         // ── Admin routes (for CLI management) ──
         .route("/admin/shutdown", post(handle_admin_shutdown))
         .route("/admin/paircode", get(handle_admin_paircode))
@@ -721,14 +734,27 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/_app/{*path}", get(static_files::handle_static))
         // ── Config PUT with larger body limit ──
         .merge(config_put_router)
+        // ── SPA fallback: non-API GET requests serve index.html ──
+        .fallback(get(static_files::handle_spa_fallback))
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(REQUEST_TIMEOUT_SECS),
-        ))
-        // ── SPA fallback: non-API GET requests serve index.html ──
-        .fallback(get(static_files::handle_spa_fallback));
+        ));
+
+    // Nest under path prefix when configured (axum strips prefix before routing).
+    // nest() at "/prefix" handles both "/prefix" and "/prefix/*" but not "/prefix/"
+    // with a trailing slash, so we add a fallback redirect for that case.
+    let app = if let Some(prefix) = path_prefix {
+        let redirect_target = prefix.to_string();
+        Router::new().nest(prefix, inner).route(
+            &format!("{prefix}/"),
+            get(|| async move { axum::response::Redirect::permanent(&redirect_target) }),
+        )
+    } else {
+        inner
+    };
 
     // Run the server with graceful shutdown
     axum::serve(
@@ -1753,6 +1779,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -1805,6 +1832,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2181,6 +2209,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let mut headers = HeaderMap::new();
@@ -2247,6 +2276,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let headers = HeaderMap::new();
@@ -2325,6 +2355,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let response = handle_webhook(
@@ -2375,6 +2406,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let mut headers = HeaderMap::new();
@@ -2430,6 +2462,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let mut headers = HeaderMap::new();
@@ -2490,6 +2523,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -2546,6 +2580,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let mut headers = HeaderMap::new();
