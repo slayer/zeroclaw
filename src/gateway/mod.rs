@@ -315,6 +315,8 @@ pub struct AppState {
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Registry of dynamically connected nodes
     pub node_registry: Arc<nodes::NodeRegistry>,
+    /// Path prefix for reverse-proxy deployments (empty string = no prefix)
+    pub path_prefix: String,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -672,6 +674,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         event_tx,
         shutdown_tx,
         node_registry,
+        path_prefix: path_prefix.unwrap_or("").to_string(),
     };
 
     // Config PUT needs larger body limit (1MB)
@@ -729,14 +732,14 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/_app/{*path}", get(static_files::handle_static))
         // ── Config PUT with larger body limit ──
         .merge(config_put_router)
+        // ── SPA fallback: non-API GET requests serve index.html ──
+        .fallback(get(static_files::handle_spa_fallback))
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(REQUEST_TIMEOUT_SECS),
-        ))
-        // ── SPA fallback: non-API GET requests serve index.html ──
-        .fallback(get(static_files::handle_spa_fallback));
+        ));
 
     // Nest under path prefix when configured (axum strips prefix before routing)
     let app = if let Some(prefix) = path_prefix {
@@ -1768,6 +1771,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -1820,6 +1824,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2196,6 +2201,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let mut headers = HeaderMap::new();
@@ -2262,6 +2268,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let headers = HeaderMap::new();
@@ -2340,6 +2347,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let response = handle_webhook(
@@ -2390,6 +2398,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let mut headers = HeaderMap::new();
@@ -2445,6 +2454,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let mut headers = HeaderMap::new();
@@ -2505,6 +2515,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -2561,6 +2572,7 @@ mod tests {
             event_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            path_prefix: String::new(),
         };
 
         let mut headers = HeaderMap::new();
