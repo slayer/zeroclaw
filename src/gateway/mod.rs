@@ -756,6 +756,13 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         inner
     };
 
+    // Nest under path prefix when configured (axum strips prefix before routing)
+    let app = if let Some(prefix) = path_prefix {
+        Router::new().nest(prefix, inner)
+    } else {
+        inner
+    };
+
     // Run the server with graceful shutdown
     axum::serve(
         listener,
