@@ -4,7 +4,7 @@
 
 use axum::{
     extract::State,
-    http::{header, StatusCode, Uri},
+    http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
 use rust_embed::Embed;
@@ -28,7 +28,12 @@ pub async fn handle_static(uri: Uri) -> Response {
 
 /// SPA fallback: serve index.html for any non-API, non-static GET request.
 /// Injects `window.__ZEROCLAW_BASE__` so the frontend knows the path prefix.
-pub async fn handle_spa_fallback(State(state): State<AppState>) -> Response {
+///
+/// Prefix resolution order:
+/// 1. Explicit `path_prefix` from config (highest priority)
+/// 2. `X-Ingress-Path` header (set by Home Assistant ingress proxy)
+/// 3. No prefix (default)
+pub async fn handle_spa_fallback(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(content) = WebAssets::get("index.html") else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -39,16 +44,32 @@ pub async fn handle_spa_fallback(State(state): State<AppState>) -> Response {
 
     let html = String::from_utf8_lossy(&content.data);
 
+    // Resolve the effective prefix: config > X-Ingress-Path > none
+    let ingress_prefix = if state.path_prefix.is_empty() {
+        headers
+            .get("X-Ingress-Path")
+            .and_then(|v| v.to_str().ok())
+            .and_then(sanitize_ingress_path)
+    } else {
+        None
+    };
+
+    let effective_prefix: &str = if state.path_prefix.is_empty() {
+        ingress_prefix.as_deref().unwrap_or("")
+    } else {
+        &state.path_prefix
+    };
+
     // Inject path prefix for the SPA and rewrite asset paths in the HTML
-    let html = if state.path_prefix.is_empty() {
+    let html = if effective_prefix.is_empty() {
         html.into_owned()
     } else {
-        let pfx = &state.path_prefix;
         // JSON-encode the prefix to safely embed in a <script> block
-        let json_pfx = serde_json::to_string(pfx).unwrap_or_else(|_| "\"\"".to_string());
+        let json_pfx =
+            serde_json::to_string(effective_prefix).unwrap_or_else(|_| "\"\"".to_string());
         let script = format!("<script>window.__ZEROCLAW_BASE__={json_pfx};</script>");
         // Rewrite absolute /_app/ references so the browser requests {prefix}/_app/...
-        html.replace("/_app/", &format!("{pfx}/_app/"))
+        html.replace("/_app/", &format!("{effective_prefix}/_app/"))
             .replace("<head>", &format!("<head>{script}"))
     };
 
@@ -61,6 +82,28 @@ pub async fn handle_spa_fallback(State(state): State<AppState>) -> Response {
         html,
     )
         .into_response()
+}
+
+/// Validate and sanitize an `X-Ingress-Path` header value.
+/// Returns `None` if the value is empty, missing the leading `/`, or
+/// contains characters unsafe for embedding in HTML/URLs.
+fn sanitize_ingress_path(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() || !trimmed.starts_with('/') {
+        return None;
+    }
+    // Same character allowlist as config path_prefix validation — reject
+    // anything that could enable XSS or path traversal when injected into HTML.
+    let safe = trimmed.chars().all(|c| {
+        matches!(c, '/' | '-' | '_' | '.' | '~'
+            | 'a'..='z' | 'A'..='Z' | '0'..='9'
+            | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | ';' | '='
+            | ':' | '@')
+    });
+    if !safe {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 fn serve_embedded_file(path: &str) -> Response {
@@ -90,5 +133,64 @@ fn serve_embedded_file(path: &str) -> Response {
                 .into_response()
         }
         None => (StatusCode::NOT_FOUND, "Not found").into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_valid_ha_ingress_path() {
+        assert_eq!(
+            sanitize_ingress_path("/api/hassio_ingress/abc123"),
+            Some("/api/hassio_ingress/abc123".into())
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_trailing_slash() {
+        assert_eq!(
+            sanitize_ingress_path("/api/hassio_ingress/abc123/"),
+            Some("/api/hassio_ingress/abc123".into())
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_whitespace() {
+        assert_eq!(sanitize_ingress_path("  /prefix  "), Some("/prefix".into()));
+    }
+
+    #[test]
+    fn sanitize_rejects_empty() {
+        assert_eq!(sanitize_ingress_path(""), None);
+        assert_eq!(sanitize_ingress_path("   "), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_no_leading_slash() {
+        assert_eq!(sanitize_ingress_path("api/ingress"), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_bare_slash() {
+        // "/" becomes "" after trim_end_matches('/')
+        assert_eq!(sanitize_ingress_path("/"), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_xss_attempt() {
+        assert_eq!(sanitize_ingress_path("/<script>alert(1)</script>"), None);
+        assert_eq!(sanitize_ingress_path("/prefix?q=1"), None);
+        assert_eq!(sanitize_ingress_path("/prefix#frag"), None);
+        assert_eq!(sanitize_ingress_path("/pre fix"), None);
+    }
+
+    #[test]
+    fn sanitize_allows_uri_safe_chars() {
+        assert_eq!(
+            sanitize_ingress_path("/a-b_c.d~e"),
+            Some("/a-b_c.d~e".into())
+        );
     }
 }
