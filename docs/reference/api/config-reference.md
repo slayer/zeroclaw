@@ -354,6 +354,13 @@ Notes:
 | `require_pairing` | `true` | require pairing before bearer auth |
 | `allow_public_bind` | `false` | block accidental public exposure |
 | `path_prefix` | _(none)_ | URL path prefix for reverse-proxy deployments (e.g. `"/zeroclaw"`) |
+| `trust_forwarded_headers` | `false` | trust `X-Forwarded-For`/`X-Real-IP` for client IP (enable only behind a trusted reverse proxy) |
+| `pair_rate_limit_per_minute` | `10` | max `/pair` requests per minute per client |
+| `webhook_rate_limit_per_minute` | `60` | max `/webhook` requests per minute per client |
+| `webhook_tools` | `false` | run full agent loop (MCP tools, memory, skills) on `/webhook` instead of simple chat |
+| `idempotency_ttl_secs` | `300` | TTL for webhook idempotency keys |
+| `idempotency_max_keys` | `10000` | max distinct idempotency keys in memory |
+| `rate_limit_max_keys` | `10000` | max distinct client keys tracked by rate limiter |
 
 When deploying behind a reverse proxy that maps ZeroClaw to a sub-path,
 set `path_prefix` to that sub-path (e.g. `"/zeroclaw"`). All gateway

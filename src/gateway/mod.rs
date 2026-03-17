@@ -1052,7 +1052,11 @@ async fn handle_webhook(
     let message = &webhook_body.message;
     let session_id = webhook_session_id(&headers);
 
-    if state.auto_save && !memory::should_skip_autosave_content(message) {
+    // Read at request time so runtime config updates via PUT /api/config take effect.
+    let webhook_tools = state.config.lock().gateway.webhook_tools;
+
+    // Skip autosave when using full agent loop — process_message handles memory internally.
+    if !webhook_tools && state.auto_save && !memory::should_skip_autosave_content(message) {
         let key = webhook_memory_key();
         let _ = state
             .mem
@@ -1088,7 +1092,14 @@ async fn handle_webhook(
             messages_count: 1,
         });
 
-    match run_gateway_chat_simple(&state, message).await {
+    // Full agent loop with tools (MCP, memory, etc.) or simple chat.
+    let result = if webhook_tools {
+        run_gateway_chat_with_tools(&state, message, session_id.as_deref()).await
+    } else {
+        run_gateway_chat_simple(&state, message).await
+    };
+
+    match result {
         Ok(response) => {
             let duration = started_at.elapsed();
             state
