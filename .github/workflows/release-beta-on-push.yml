@@ -2,7 +2,7 @@ name: Release Beta
 
 on:
   push:
-    branches: [master]
+    branches: [master, ha-friendly]
   workflow_dispatch:
 
 concurrency:
