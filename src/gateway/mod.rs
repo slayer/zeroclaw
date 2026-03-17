@@ -3072,4 +3072,108 @@ mod tests {
         let err = require_localhost(&peer).unwrap_err();
         assert_eq!(err.0, StatusCode::FORBIDDEN);
     }
+
+    /// Verifies the `webhook_tools = true` branch: autosave is skipped (because
+    /// `process_message` handles memory internally) and the handler returns 200
+    /// when the agent loop succeeds via a stubbed LLM server.
+    #[tokio::test]
+    async fn webhook_tools_enabled_skips_autosave_and_returns_200() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Spin up a local stub that mimics the OpenAI /chat/completions endpoint.
+        let llm_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "Hello from stub!"
+                        }
+                    }]
+                })),
+            )
+            .mount(&llm_server)
+            .await;
+
+        // Point the config at the stub and enable the full agent loop.
+        let mut config = Config::default();
+        config.default_provider = Some("openai".to_string());
+        config.api_key = Some("stub-key".to_string());
+        config.api_url = Some(llm_server.uri());
+        config.gateway.webhook_tools = true;
+        // Use the no-op memory backend so no filesystem state is required.
+        config.memory.backend = "none".to_string();
+        // Redirect workspace to a temp directory.
+        let temp = tempfile::tempdir().unwrap();
+        config.workspace_dir = temp.path().to_path_buf();
+        config.config_path = temp.path().join("config.toml");
+
+        // TrackingMemory is used only for the autosave path (state.mem).
+        let tracking_impl = Arc::new(TrackingMemory::default());
+        let memory: Arc<dyn Memory> = tracking_impl.clone();
+
+        // Use a call-counted MockProvider to confirm state.provider is bypassed —
+        // process_message builds its own provider from config, so this must stay at zero.
+        let mock_provider_impl = Arc::new(MockProvider::default());
+        let mock_provider: Arc<dyn Provider> = mock_provider_impl.clone();
+
+        let state = AppState {
+            config: Arc::new(Mutex::new(config)),
+            provider: mock_provider,
+            model: "gpt-4o".into(),
+            temperature: 0.0,
+            mem: memory,
+            auto_save: true,
+            webhook_secret_hash: None,
+            pairing: Arc::new(PairingGuard::new(false, &[])),
+            trust_forwarded_headers: false,
+            rate_limiter: Arc::new(GatewayRateLimiter::new(100, 100, 100)),
+            idempotency_store: Arc::new(IdempotencyStore::new(Duration::from_secs(300), 1000)),
+            whatsapp: None,
+            whatsapp_app_secret: None,
+            linq: None,
+            linq_signing_secret: None,
+            nextcloud_talk: None,
+            nextcloud_talk_webhook_secret: None,
+            wati: None,
+            observer: Arc::new(crate::observability::NoopObserver),
+            tools_registry: Arc::new(Vec::new()),
+            cost_tracker: None,
+            event_tx: tokio::sync::broadcast::channel(16).0,
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+        };
+
+        let response = handle_webhook(
+            State(state),
+            test_connect_info(),
+            HeaderMap::new(),
+            Ok(Json(WebhookBody {
+                message: "hello".into(),
+            })),
+        )
+        .await
+        .into_response();
+
+        // The handler must return 200 when the agent loop succeeds.
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // state.provider must never be called — process_message uses its own provider.
+        assert_eq!(
+            mock_provider_impl.calls.load(Ordering::SeqCst),
+            0,
+            "state.provider must not be called when webhook_tools is true"
+        );
+
+        // Autosave must be skipped — state.mem.store() must never be called.
+        // TrackingMemory.store() records each call in `keys`, so an empty vec
+        // confirms store() was never invoked.
+        assert!(
+            tracking_impl.keys.lock().is_empty(),
+            "autosave must be skipped when webhook_tools is true"
+        );
+    }
 }
